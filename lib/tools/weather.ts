@@ -3,17 +3,37 @@ import { z } from "zod";
 
 const WEATHER_API_TIMEOUT_MS = 8000; // 8 seconds
 
+const DAILY_VARIABLES = [
+  "temperature_2m_max",
+  "temperature_2m_min",
+  "precipitation_sum",
+  "windspeed_10m_max",
+  "weathercode",
+] as const;
+
+type DailyVariable = (typeof DAILY_VARIABLES)[number];
+
+const DAILY_VARIABLE_TO_FORECAST_KEY: Record<DailyVariable, string> = {
+  temperature_2m_max: "temperature_max",
+  temperature_2m_min: "temperature_min",
+  precipitation_sum: "precipitation",
+  windspeed_10m_max: "windspeed_max",
+  weathercode: "weathercode",
+};
+
 export const weatherTool = tool({
   description:
     "Get weather forecast data for a location. Use this when the user asks about weather, temperature, rain, wind, or forecasts for any location.",
   parameters: z.object({
     latitude: z
-      .number()
+      .coerce.number()
+      .finite()
       .min(-90)
       .max(90)
       .describe("Latitude of the location"),
     longitude: z
-      .number()
+      .coerce.number()
+      .finite()
       .min(-180)
       .max(180)
       .describe("Longitude of the location"),
@@ -24,22 +44,25 @@ export const weatherTool = tool({
       .max(7)
       .default(3)
       .describe("Number of forecast days (1-7, default: 3)"),
+    daily: z
+      .array(z.enum(DAILY_VARIABLES))
+      .min(1)
+      .optional()
+      .describe(
+        "Daily variables to include (default: temperature, precipitation, wind, weathercode)"
+      ),
   }),
-  execute: async ({ latitude, longitude, forecastDays }) => {
+  execute: async ({ latitude, longitude, forecastDays, daily }) => {
     try {
       const url = new URL("https://api.open-meteo.com/v1/forecast");
 
       url.searchParams.set("latitude", String(latitude));
       url.searchParams.set("longitude", String(longitude));
+
+      const dailyVariables = daily?.length ? daily : DAILY_VARIABLES;
       url.searchParams.set(
         "daily",
-        [
-          "temperature_2m_max",
-          "temperature_2m_min",
-          "precipitation_sum",
-          "windspeed_10m_max",
-          "weathercode",
-        ].join(",")
+        dailyVariables.join(",")
       );
       url.searchParams.set("forecast_days", String(forecastDays));
       url.searchParams.set("timezone", "auto");
@@ -85,8 +108,8 @@ export const weatherTool = tool({
 
       const data = await response.json();
 
-      const daily = data?.daily as Record<string, unknown> | undefined;
-      const time = daily?.time;
+      const dailyData = data?.daily as Record<string, unknown> | undefined;
+      const time = dailyData?.time;
 
       // Lightweight shape checks to ensure arrays are aligned by index.
       if (
@@ -98,41 +121,32 @@ export const weatherTool = tool({
         };
       }
 
-      const temperatureMax = daily?.temperature_2m_max;
-      const temperatureMin = daily?.temperature_2m_min;
-      const precipitation = daily?.precipitation_sum;
-      const windspeedMax = daily?.windspeed_10m_max;
-      const weathercode = daily?.weathercode;
-
-      const requiredArrays = {
-        "daily.temperature_2m_max": temperatureMax,
-        "daily.temperature_2m_min": temperatureMin,
-        "daily.precipitation_sum": precipitation,
-        "daily.windspeed_10m_max": windspeedMax,
-        "daily.weathercode": weathercode,
-      } as const;
-
-      for (const [label, values] of Object.entries(requiredArrays)) {
+      for (const variable of dailyVariables) {
+        const values = dailyData?.[variable];
         if (!Array.isArray(values) || values.length !== time.length) {
           return {
-            error: `Invalid response format from Open-Meteo API (${label} missing or misaligned)`,
+            error: `Invalid response format from Open-Meteo API (daily.${variable} missing or misaligned)`,
           };
         }
       }
 
-      const forecast = time.map((date, i) => ({
-        date,
-        temperature_max: (temperatureMax as unknown[])[i],
-        temperature_min: (temperatureMin as unknown[])[i],
-        precipitation: (precipitation as unknown[])[i],
-        windspeed_max: (windspeedMax as unknown[])[i],
-        weathercode: (weathercode as unknown[])[i],
-      }));
+      const forecast = time.map((date, i) => {
+        const row: Record<string, unknown> = { date };
+
+        for (const variable of dailyVariables) {
+          row[DAILY_VARIABLE_TO_FORECAST_KEY[variable]] = (
+            dailyData?.[variable] as unknown[]
+          )[i];
+        }
+
+        return row;
+      });
 
       return {
         latitude,
         longitude,
         forecast_days: forecastDays,
+        daily: dailyVariables,
         forecast,
       };
     } catch (err: unknown) {
