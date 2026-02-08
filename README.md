@@ -18,6 +18,9 @@ npm run dev
 
 Open [http://localhost:3000](http://localhost:3000) to use the chat interface.
 
+> Note: You may see a Next.js SWC version warning on first run.
+> A clean install (`rm -rf node_modules .next && npm install`) resolves it.
+
 ## Prerequisites
 
 - Node.js 18+
@@ -32,13 +35,10 @@ app/
   layout.tsx            # Root layout
   api/chat/route.ts     # Chat API route
 lib/
-  tools/weather.ts      # Weather tool (TODO)
-  tools/analyze.ts      # Code analysis tool (TODO)
+  tools/weather.ts      # Weather tool
+  tools/analyze.ts      # Code analysis tool
   utils.ts              # Utility functions
 components/ui/          # UI components
 ```
 
 See [INSTRUCTIONS.md](./INSTRUCTIONS.md) for assessment details.
-# weather-chatbot
-# weather-chatbot
-# weather-chatbot
