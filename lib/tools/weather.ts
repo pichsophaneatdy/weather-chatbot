@@ -3,44 +3,6 @@ import { z } from "zod";
 
 const WEATHER_API_TIMEOUT_MS = 8000; // 8 seconds
 
-/**
- * TODO: Implement the weather data tool
- *
- * This tool should:
- * 1. Accept parameters for location, forecast days, and weather variables
- * 2. Use the Open-Meteo API to fetch weather forecast data
- * 3. Return structured weather data that the LLM can use to answer questions
- *
- * Open-Meteo API docs: https://open-meteo.com/en/docs
- * Base URL: https://api.open-meteo.com/v1/forecast
- *
- * Example API call:
- *   https://api.open-meteo.com/v1/forecast?latitude=35.6762&longitude=139.6503&daily=temperature_2m_max,temperature_2m_min&timezone=auto&forecast_days=3
- *
- * Steps to implement:
- *   a. Define the tool parameters schema using Zod:
- *      - latitude (number, required): Latitude of the location
- *      - longitude (number, required): Longitude of the location
- *      - forecast_days (number, optional, default 3): Number of days to forecast (1-7)
- *      - daily (array of strings, optional): Weather variables to include
- *        Useful variables: temperature_2m_max, temperature_2m_min,
- *        precipitation_sum, windspeed_10m_max, weathercode
- *
- *   b. Make a fetch request to the Open-Meteo API with the parameters
- *
- *   c. Parse the JSON response and return it
- *
- *   d. Handle errors:
- *      - API errors (non-200 status)
- *      - Network failures
- *      - Invalid response format
- *
- * Hints:
- *   - The LLM will provide latitude/longitude — you can trust it to geocode city names
- *   - Open-Meteo is free and requires no API key
- *   - Keep the return format simple — the LLM will format it for the user
- */
-
 export const weatherTool = tool({
   description:
     "Get weather forecast data for a location. Use this when the user asks about weather, temperature, rain, wind, or forecasts for any location.",
@@ -82,12 +44,15 @@ export const weatherTool = tool({
       url.searchParams.set("forecast_days", String(forecastDays));
       url.searchParams.set("timezone", "auto");
 
+      // `no-store` avoids Next.js caching; timeout prevents tool calls from hanging.
       const response = await fetch(url.toString(), {
         cache: "no-store",
         signal: AbortSignal.timeout(WEATHER_API_TIMEOUT_MS),
       });
 
       if (!response.ok) {
+        // Open-Meteo often returns helpful error details in the response body.
+        // Use `clone()` so we can try JSON first and fall back to text safely.
         const contentType = response.headers.get("content-type") ?? "";
         let errorBody: unknown = undefined;
 
@@ -123,6 +88,7 @@ export const weatherTool = tool({
       const daily = data?.daily as Record<string, unknown> | undefined;
       const time = daily?.time;
 
+      // Lightweight shape checks to ensure arrays are aligned by index.
       if (
         !Array.isArray(time) ||
         !time.every((value) => typeof value === "string")
