@@ -1,69 +1,114 @@
 import { tool } from "ai";
 import { z } from "zod";
+import { spawnSync } from "child_process";
 
-/**
- * TODO: Implement the code analysis tool
- *
- * This tool should:
- * 1. Accept a Python code string as a parameter
- * 2. Execute the code using the system's Python interpreter
- * 3. Return the stdout output (and stderr if there are errors)
- *
- * How it works:
- *   - The LLM generates Python code to analyze data, do calculations, etc.
- *   - This tool executes that code and returns the output
- *   - The LLM then interprets the results for the user
- *
- * Steps to implement:
- *   a. Define the tool parameters schema using Zod:
- *      - code (string, required): The Python code to execute
- *
- *   b. Execute the Python code:
- *      - Use `child_process.execSync` or `child_process.spawn`
- *      - Run: python3 -c "<code>"
- *      - Set a timeout (e.g., 10 seconds) to prevent infinite loops
- *      - Capture both stdout and stderr
- *
- *   c. Return the results:
- *      - stdout: The program's output
- *      - stderr: Any error messages (if applicable)
- *      - exitCode: 0 for success, non-zero for errors
- *
- *   d. Handle errors:
- *      - Timeout exceeded
- *      - Python not installed
- *      - Syntax errors in the code
- *      - Runtime errors
- *
- * Hints:
- *   - Use `execSync` for simplicity, it blocks until the command finishes
- *   - Pass the code via stdin or -c flag to avoid shell escaping issues
- *   - Set `maxBuffer` to handle larger outputs
- *   - Consider using `spawnSync` with `input` option to pipe code via stdin:
- *       spawnSync("python3", ["-c", code], { timeout: 10000, encoding: "utf-8" })
- *
- * Safety notes (mention in INSTRUCTIONS.md):
- *   - This runs arbitrary code on the local machine
- *   - In production, you would sandbox this (Docker, etc.)
- *   - For this assessment, local execution is fine
- */
+const PYTHON_EXEC_TIMEOUT_MS = 10_000; // 10 seconds
+const PYTHON_MAX_BUFFER = 1024 * 1024; // 1MB
 
 export const analyzeTool = tool({
   description:
     "Execute Python code for data analysis, calculations, or processing. The LLM writes Python code, and this tool runs it and returns the output.",
-  parameters: z.object({
-    // TODO: Define your parameters here
-    // Example:
-    // code: z.string().describe("Python code to execute"),
-  }),
-  execute: async (params) => {
-    // TODO: Implement the Python code execution logic
-    // 1. Extract the code from params
-    // 2. Execute it with python3
-    // 3. Return stdout, stderr, and exit code
 
-    return {
-      error: "Analysis tool not implemented yet. See TODO comments in lib/tools/analyze.ts",
-    };
+  parameters: z.object({
+    code: z
+      .string()
+      .min(1)
+      .max(10_000)
+      .describe("Python code to execute"),
+  }),
+
+  execute: async ({ code }) => {
+    try {
+      // Run via stdin (`python3 -`) instead of `-c` to avoid OS arg-length limits.
+      // `-u` + env vars keep output unbuffered and consistently UTF-8 encoded.
+      const result = spawnSync("python3", ["-u", "-"], {
+        input: code,
+        encoding: "utf-8",
+        timeout: PYTHON_EXEC_TIMEOUT_MS,
+        maxBuffer: PYTHON_MAX_BUFFER,
+        env: {
+          ...process.env,
+          PYTHONIOENCODING: "utf-8",
+          PYTHONUNBUFFERED: "1",
+        },
+      });
+
+      // Handle execution errors (timeout, interpreter missing, spawn failure, etc.)
+      if (result.error) {
+        const err = result.error as NodeJS.ErrnoException;
+
+        // Use common CLI exit codes where possible:
+        // - 124: timeout, 126: not executable, 127: command not found
+        if (err.code === "ETIMEDOUT") {
+          return {
+            stdout: "",
+            stderr: "Python execution timed out",
+            exitCode: 124,
+          };
+        }
+
+        if (err.code === "ENOENT") {
+          return {
+            stdout: "",
+            stderr:
+              "Python interpreter not found (python3). Install Python 3 and ensure `python3` is on your PATH.",
+            exitCode: 127,
+          };
+        }
+
+        if (err.code === "EACCES") {
+          return {
+            stdout: "",
+            stderr:
+              "Permission denied when trying to run python3. Check file permissions or your environment setup.",
+            exitCode: 126,
+          };
+        }
+
+        if (
+          err.code === "ERR_CHILD_PROCESS_STDIO_MAXBUFFER" ||
+          err.message.toLowerCase().includes("maxbuffer")
+        ) {
+          return {
+            stdout: result.stdout ?? "",
+            stderr: `Python output exceeded maxBuffer (${PYTHON_MAX_BUFFER} bytes)`,
+            exitCode: 1,
+          };
+        }
+
+        return {
+          stdout: "",
+          stderr: err.code ? `${err.code}: ${err.message}` : err.message,
+          exitCode: 1,
+        };
+      }
+
+      // If the process was terminated by a signal, `status` is null.
+      if (result.status === null) {
+        return {
+          stdout: result.stdout ?? "",
+          stderr:
+            result.stderr?.trim() ||
+            `Python process terminated by signal ${result.signal ?? "unknown"}`,
+          exitCode: 128,
+        };
+      }
+
+      return {
+        stdout: result.stdout ?? "",
+        stderr: result.stderr ?? "",
+        exitCode: result.status,
+      };
+    } catch (err: unknown) {
+      // Absolute last-resort safety net
+      return {
+        stdout: "",
+        stderr:
+          err instanceof Error
+            ? `Unexpected error: ${err.message}`
+            : "Unknown error occurred while executing Python code",
+        exitCode: 1,
+      };
+    }
   },
 });
